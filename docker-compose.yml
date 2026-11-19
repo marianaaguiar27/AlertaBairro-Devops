@@ -1,0 +1,38 @@
+services:
+  api:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      ConnectionStrings__Oracle: "User Id=alertabairro;Password=${APP_DB_PASSWORD:?Defina APP_DB_PASSWORD};Data Source=oracle:1521/XEPDB1" 
+      USE_HTTPS_REDIRECTION: "false"
+    depends_on:
+      oracle:
+        condition: service_healthy
+    networks:
+      - alertabairro
+
+  oracle:
+    image: gvenzl/oracle-xe:21-slim-faststart
+    environment:
+      ORACLE_PASSWORD: "${ORACLE_PASSWORD:?Defina ORACLE_PASSWORD}"
+      APP_USER: alertabairro
+      APP_USER_PASSWORD: "${APP_DB_PASSWORD:?Defina APP_DB_PASSWORD}"
+    expose:
+      - "1521"
+    volumes:
+      - oracle_data:/opt/oracle/oradata
+    healthcheck:
+      test: ["CMD", "healthcheck.sh"]
+      interval: 10s
+      timeout: 5s
+      start_period: 2m
+      retries: 30
+    networks:
+      - alertabairro
+
+networks:
+  alertabairro:
+
+volumes:
+  oracle_data:

@@ -22,7 +22,18 @@ builder.Services.AddDbContext<AlertaBairroDbContext>(options =>
 
 var app = builder.Build();
 
-app.UseHttpsRedirection();
-app.MapControllers();
+if (app.Configuration.GetValue<bool>("APPLY_MIGRATIONS"))
+{
+    using var scope = app.Services.CreateScope();
+    var db = scope.ServiceProvider.GetRequiredService<AlertaBairroDbContext>();
+    await db.Database.MigrateAsync();
+    return;
+}
 
+if (app.Configuration.GetValue("USE_HTTPS_REDIRECTION", true))
+{
+    app.UseHttpsRedirection();
+}
+
+app.MapControllers();
 app.Run();
