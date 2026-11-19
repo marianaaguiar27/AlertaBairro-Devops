@@ -1,180 +1,218 @@
-# AlertaBairro
+# AlertaBairro · Global Solution 2026/2
 
-API REST da solução CitizenTech **AlertaBairro**, voltada ao registro de alertas
-comunitários associados a bairros.
+O **AlertaBairro** é uma API CitizenTech para registrar e acompanhar alertas comunitários, como alagamentos, associados a bairros. A solução usa **ASP.NET Core 8, Entity Framework Core e Oracle XE**. A API e o banco rodam em containers Docker em uma VM Ubuntu no Microsoft Azure.
 
-## Integrantes
+**Integrantes e RMs:** 
+Mariana de Paula Aguiar - RM566850 / 2TDSPB 
+Gustavo Miguel Martins de Oliveira - RM566666 / 2TDSPB 
+Manuella Moraes Rodrigues Rinaldi - RM567915 / 2TDSPS
+**Vídeo da demonstração:** [AlertaBairro Docker](https://youtu.be/oVS1G1NBJ9o)
 
-- A preencher: nome e RM de cada integrante.
+## Arquitetura
+![Arquitetura do AlertaBairro na Azure com API .NET, Oracle XE e volume persstente](docs/arquitetura-alertabairro.png)
 
-## Tecnologias
 
-- ASP.NET Core 8 Web API com controllers
-- Entity Framework Core 8
-- Oracle Database
-- Migrations do Entity Framework Core
+Um bairro pode ter vários alertas. A chave estrangeira `ALERTAS.BairroId` referencia `BAIRROS.Id`. O Compose aguarda o Oracle passar no *healthcheck* antes de iniciar a API. A porta `8080` é publicada na VM. A porta `1521` é usada dentro da rede Docker.
 
-## Modelo de dados
-
-```mermaid
-erDiagram
-    BAIRRO ||--o{ ALERTA : possui
-    BAIRRO {
-        int Id PK
-        string Nome
-        string Cidade
-        string Estado
-    }
-    ALERTA {
-        int Id PK
-        string Titulo
-        string Descricao
-        string Categoria
-        string Status
-        datetime DataRegistro
-        int BairroId FK
-    }
-```
-
-Um bairro pode possuir vários alertas, e cada alerta pertence a um único bairro.
-
-## Pré-requisitos
-
-- .NET 8 SDK
-- Acesso ao Oracle da FIAP
-- Git
-
-## Configuração da conexão
-
-A aplicação não armazena credenciais no repositório. Configure a connection
-string por variável de ambiente.
-
-No PowerShell:
-
-```powershell
-$env:ConnectionStrings__Oracle = "User Id=SEU_USUARIO;Password=SUA_SENHA;Data Source=oracle.fiap.com.br:PORTA/SERVICO"
-```
-
-Substitua `PORTA` e `SERVICO` pelos dados fornecidos pela FIAP, assim como
-usuário e senha. Não envie credenciais ao repositório. A variável
-`ORACLE_CONNECTION_STRING` também é aceita.
-
-## Preparar o banco e executar
-
-Na raiz do repositório:
-
-```powershell
-dotnet restore AlertaBairro.sln
-dotnet build AlertaBairro.sln
-dotnet tool restore
-dotnet tool run dotnet-ef database update `
-  --project src\AlertaBairro.Infrastructure\AlertaBairro.Infrastructure.csproj `
-  --startup-project src\AlertaBairro.Api\AlertaBairro.Api.csproj
-dotnet run --project src\AlertaBairro.Api\AlertaBairro.Api.csproj --urls http://localhost:5000
-```
-
-O comando `database update` aplica a migration e cria as tabelas no Oracle.
-As migrations ficam versionadas em:
+## Estrutura do projeto
 
 ```text
-src\AlertaBairro.Infrastructure\Persistence\Migrations
+AlertaBairro-Devops/
+├── AlertaBairro.sln
+├── Dockerfile
+├── docker-compose.yml
+├── .env.example
+├── README.md
+├── scripts/
+│   └── provision-azure.sh
+└── src/
+    ├── AlertaBairro.Api/             # Controllers e configuração da API
+    ├── AlertaBairro.Application/     # DTOs e validação
+    ├── AlertaBairro.Domain/          # Entidades Bairro e Alerta
+    └── AlertaBairro.Infrastructure/  # EF Core, Oracle e migrations
 ```
 
-## Rotas
+O Dockerfile compila a API em uma etapa com o SDK .NET 8. A imagem final executa a aplicação com o usuário não-root `app`, no `WORKDIR /app`, e expõe a porta `8080`. O Compose injeta a conexão do banco por meio de `ConnectionStrings__Oracle`.
 
-### Bairros
+## Como reproduzir na Azure
 
-```text
-GET    /api/bairros
-GET    /api/bairros/{id}
-POST   /api/bairros
-PUT    /api/bairros/{id}
-DELETE /api/bairros/{id}
+### 1. Provisionar a VM com Azure CLI
+
+Abra o **Azure Cloud Shell em Bash**. A VM usa Ubuntu 24.04 x86-64 e o tamanho `Standard_B2s_v2` em **Mexico Central**. A disponibilidade depende da região e da cota da assinatura.
+
+```bash
+az account show -o table
+az group create --name rg-alertabairro --location mexicocentral
+
+az vm create \
+  --resource-group rg-alertabairro \
+  --name vm-alertabairro \
+  --location mexicocentral \
+  --image Canonical:ubuntu-24_04-lts:server:latest \
+  --size Standard_B2s_v2 \
+  --admin-username azureuser \
+  --generate-ssh-keys \
+  --public-ip-sku Standard \
+  --nsg-rule NONE
 ```
 
-## Verificação manual do CRUD
+Para descobrir o IPv4 público do computador que vai testar a API, execute `curl.exe -4 https://api.ipify.org` no **PowerShell do Windows**. Depois, no **Cloud Shell Bash**, rode o bloco abaixo e informe esse IPv4 quando solicitado. A regra de SSH usa o IP de saída do próprio Cloud Shell.
 
-Com a API em execução e o Oracle configurado, abra outro PowerShell. Os
-exemplos a seguir usam os IDs retornados pela API e registram o código HTTP.
+```bash
+IP_VM=$(az vm show -d -g rg-alertabairro -n vm-alertabairro --query publicIps -o tsv)
+IP_SSH=$(curl -4fsS https://api.ipify.org)
+read -r -p "IPv4 público do computador que vai testar a API: " IP_CLIENTE
 
-Crie um bairro (`201`), liste e consulte (`200`):
+az network nsg rule create -g rg-alertabairro --nsg-name vm-alertabairroNSG \
+  -n AllowSSH --priority 1000 --protocol Tcp \
+  --source-address-prefixes "$IP_SSH/32" --destination-port-ranges 22 --access Allow
+
+az network nsg rule create -g rg-alertabairro --nsg-name vm-alertabairroNSG \
+  -n AllowAPI --priority 1010 --protocol Tcp \
+  --source-address-prefixes "$IP_CLIENTE/32" --destination-port-ranges 8080 --access Allow
+
+echo "IP público da VM: $IP_VM"
+ssh azureuser@"$IP_VM"
+```
+
+### 2. Instalar Docker e configurar o ambiente
+
+No **terminal SSH da VM**, execute:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y git docker.io docker-compose-v2
+sudo systemctl enable --now docker
+
+git clone https://github.com/marianaaguiar27/AlertaBairro-Devops.git
+cd AlertaBairro-Devops
+cp .env.example .env
+chmod 600 .env
+nano .env
+```
+
+Preencha `ORACLE_PASSWORD` com a senha do administrador e `APP_DB_PASSWORD` com a senha do usuário `alertabairro`. Use senhas distintas com letras e números. O `.env` é local. O repositório contém apenas o modelo `.env.example`.
+
+### 3. Subir o Oracle, aplicar a migration e iniciar a API
+
+Ainda na VM, na raiz do repositório, execute:
+
+```bash
+sudo docker compose config --quiet
+sudo docker compose up -d --wait oracle
+sudo docker compose build api
+sudo docker compose run --rm -e APPLY_MIGRATIONS=true api
+sudo docker compose up -d --wait
+sudo docker compose ps
+curl -i http://localhost:8080/api/bairros
+```
+
+A migration cria `BAIRROS` e `ALERTAS`. O último comando deve retornar `200 OK` e, em um banco novo, `[]`.
+
+## Testar o CRUD pelo IP público
+
+No **PowerShell do Windows**, substitua `IP_PUBLICO_DA_VM` pelo IP exibido no provisionamento. Use a mesma sessão até o fim para manter os IDs retornados pela API.
 
 ```powershell
-$base = "http://localhost:5000/api"
-$bairro = @{ nome = "Moema"; cidade = "Sao Paulo"; estado = "SP" } | ConvertTo-Json
-$resposta = Invoke-WebRequest -Method Post -Uri "$base/bairros" -ContentType "application/json" -Body $bairro -UseBasicParsing
-$resposta.StatusCode
-$bairroId = ($resposta.Content | ConvertFrom-Json).id
-Invoke-WebRequest "$base/bairros" -UseBasicParsing
-Invoke-WebRequest "$base/bairros/$bairroId" -UseBasicParsing
+$base = 'http://IP_PUBLICO_DA_VM:8080/api'
+
+# Criar o bairro e o alerta (201)
+$dadosBairro = @{ nome = 'Vila Mariana'; cidade = 'Sao Paulo'; estado = 'SP' }
+$r = Invoke-WebRequest -UseBasicParsing -Method Post -Uri "$base/bairros" -ContentType 'application/json' -Body ($dadosBairro | ConvertTo-Json)
+$r.StatusCode
+$bairro = $r.Content | ConvertFrom-Json
+$bairro
+
+$dadosAlerta = @{
+  titulo = 'Alagamento'
+  descricao = 'Rua com ponto de alagamento'
+  categoria = 'Infraestrutura'
+  status = 'Aberto'
+  bairroId = $bairro.id
+}
+$r = Invoke-WebRequest -UseBasicParsing -Method Post -Uri "$base/alertas" -ContentType 'application/json' -Body ($dadosAlerta | ConvertTo-Json)
+$r.StatusCode
+$alerta = $r.Content | ConvertFrom-Json
+$alerta
+
+# Consultar os dois registros (200)
+curl.exe -i "$base/bairros/$($bairro.id)"
+curl.exe -i "$base/alertas/$($alerta.id)"
+
+# Editar o bairro e o alerta (204)
+$dadosBairro.nome = 'Vila Mariana - teste'
+$dadosAlerta.status = 'Resolvido'
+(Invoke-WebRequest -UseBasicParsing -Method Put -Uri "$base/bairros/$($bairro.id)" -ContentType 'application/json' -Body ($dadosBairro | ConvertTo-Json)).StatusCode
+(Invoke-WebRequest -UseBasicParsing -Method Put -Uri "$base/alertas/$($alerta.id)" -ContentType 'application/json' -Body ($dadosAlerta | ConvertTo-Json)).StatusCode
+Invoke-RestMethod -Uri "$base/alertas/$($alerta.id)"
 ```
 
-Crie um alerta relacionado (`201`), liste e consulte (`200`):
+### Consultar diretamente no Oracle
 
-```powershell
-$alerta = @{
-    titulo = "Alagamento"
-    descricao = "Rua com ponto de alagamento"
-    categoria = "Infraestrutura"
-    status = "Aberto"
-    bairroId = $bairroId
-} | ConvertTo-Json
-$resposta = Invoke-WebRequest -Method Post -Uri "$base/alertas" -ContentType "application/json" -Body $alerta -UseBasicParsing
-$resposta.StatusCode
-$alertaId = ($resposta.Content | ConvertFrom-Json).id
-Invoke-WebRequest "$base/alertas" -UseBasicParsing
-Invoke-WebRequest "$base/alertas/$alertaId" -UseBasicParsing
+Antes de excluir os registros, abra o SQL*Plus **no terminal da VM**:
+
+```bash
+sudo docker compose exec oracle sqlplus 'alertabairro@//localhost:1521/XEPDB1'
 ```
 
-Altere os dois registros (`204`):
-
-```powershell
-$bairroAtualizado = @{ nome = "Moema"; cidade = "Sao Paulo"; estado = "SP" } | ConvertTo-Json
-(Invoke-WebRequest -Method Put -Uri "$base/bairros/$bairroId" -ContentType "application/json" -Body $bairroAtualizado -UseBasicParsing).StatusCode
-$alertaAtualizado = @{
-    titulo = "Alagamento"
-    descricao = "Ponto liberado"
-    categoria = "Infraestrutura"
-    status = "Resolvido"
-    bairroId = $bairroId
-} | ConvertTo-Json
-(Invoke-WebRequest -Method Put -Uri "$base/alertas/$alertaId" -ContentType "application/json" -Body $alertaAtualizado -UseBasicParsing).StatusCode
-Invoke-WebRequest "$base/alertas/$alertaId" -UseBasicParsing
-```
-
-Verifique no cliente Oracle os registros criados:
+Digite a senha `APP_DB_PASSWORD` quando solicitada. No prompt `SQL>`, execute:
 
 ```sql
-SELECT * FROM "BAIRROS";
-SELECT * FROM "ALERTAS";
+SET LINESIZE 120
+COLUMN BAIRRO FORMAT A25
+COLUMN ALERTA FORMAT A20
+COLUMN STATUS FORMAT A12
+
+SELECT b."Id" AS BAIRRO_ID,
+       b."Nome" AS BAIRRO,
+       a."Id" AS ALERTA_ID,
+       a."Titulo" AS ALERTA,
+       a."Status" AS STATUS
+FROM "BAIRROS" b
+JOIN "ALERTAS" a ON a."BairroId" = b."Id"
+WHERE b."Nome" = 'Vila Mariana - teste';
 ```
 
-Apague primeiro o alerta e depois o bairro (`204`). Um bairro com alertas
-vinculados retorna `409`, para preservar o relacionamento.
+O resultado mostra o alerta **Alagamento** com status **Resolvido**, associado a **Vila Mariana - teste**.
+
+### Comprovar a persistência e concluir o CRUD
+
+Digite `EXIT` para sair do SQL*Plus. No **terminal da VM**, recrie os containers preservando o volume. Execute `down` sem a opção `-v`.
+
+```bash
+sudo docker compose down
+sudo docker compose up -d --wait
+sudo docker compose ps
+sudo docker volume ls --filter name=oracle_data
+```
+
+No **mesmo PowerShell**, consulte o alerta novamente e confira que ele voltou com o mesmo ID e os mesmos dados. Em seguida, exclua primeiro o alerta e depois o bairro.
 
 ```powershell
-(Invoke-WebRequest -Method Delete "$base/alertas/$alertaId" -UseBasicParsing).StatusCode
-(Invoke-WebRequest -Method Delete "$base/bairros/$bairroId" -UseBasicParsing).StatusCode
+Invoke-RestMethod -Uri "$base/alertas/$($alerta.id)"
+
+# Excluir os registros (204)
+curl.exe -i -X DELETE "$base/alertas/$($alerta.id)"
+curl.exe -i -X DELETE "$base/bairros/$($bairro.id)"
+
+# Confirmar a exclusão (404)
+curl.exe -i "$base/alertas/$($alerta.id)"
+curl.exe -i "$base/bairros/$($bairro.id)"
 ```
 
-Para demonstrar erros em JSON, envie um bairro inválido (`400`) e consulte
-o ID do bairro já excluído (`404`):
+## Evidências da demonstração
 
-```powershell
-curl.exe -i -X POST "$base/bairros" -H "Content-Type: application/json" -d "{}"
-curl.exe -i "$base/bairros/$bairroId"
-```
+| Evidência | O que conferir |  |
+|---|---|---|
+| Arquitetura macro e VM Azure | VM em Mexico Central, script da Azure CLI e diagrama da solução |  |
+| Containers em execução | `sudo docker compose ps` mostra a API na porta `8080` e o Oracle `healthy` |  |
+| Logs da API e do Oracle | `sudo docker compose logs --tail=15 api oracle` |  |
+| Acesso ao container, usuário e diretório | `sudo docker compose exec api sh -c 'id && pwd && ls -la'` mostra o usuário `app` (UID `1654`) e o diretório `/app` |  |
+| Estrutura do projeto | Pastas do repositório e arquivos `Dockerfile`, `docker-compose.yml` e `scripts/provision-azure.sh` no VS Code | |
+| CRUD funcionando | `POST`, `GET`, `PUT` e `DELETE` do bairro Vila Mariana e do alerta, pelo IP público |  |
+| `SELECT` diretamente no banco | SQL*Plus dentro do container Oracle, com `JOIN` entre `BAIRROS` e `ALERTAS` |  |
+| Persistência dos dados | Volume `oracle_data` e consulta ao mesmo alerta após recriar os containers |  |
 
-Um alerta com `bairroId` inexistente também retorna `404`. Se `dataRegistro`
-for omitida na criação, a API usa a data e hora UTC atuais; na alteração, ela
-é preservada quando omitida.
 
-### Rotas de alertas
-
-```text
-GET    /api/alertas
-GET    /api/alertas/{id}
-POST   /api/alertas
-PUT    /api/alertas/{id}
-DELETE /api/alertas/{id}
-```
+## Uso de I.A. Generativa
+Utilizamos o ChatGPT Codex como ferramenta de apoio para identificar e corrigir erros durante o desenvolvimento e organizar as etapas do projeto AlertaBairro. A equipe revisou as sugestões e validou as correções com testes.
